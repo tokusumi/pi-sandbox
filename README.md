@@ -1,5 +1,11 @@
 # pi-sandbox
 
+> **Fork notice:** This repository is a lightly patched fork of `carderne/pi-sandbox`, adding automatic Git linked-worktree sandbox support. It tracks upstream releases and otherwise aims to stay as close to upstream as possible.
+
+Upstream: [carderne/pi-sandbox](https://github.com/carderne/pi-sandbox)
+
+Worktree support automatically grants the current session read/write access to Git metadata paths reported by Git itself. These permissions are never persisted.
+
 Sandbox for [pi](https://pi.dev/).
 
 Sandboxes pi like this:

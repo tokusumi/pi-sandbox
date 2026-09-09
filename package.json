@@ -28,12 +28,12 @@
   },
   "homepage": "https://github.com/carderne/pi-sandbox",
   "scripts": {
-    "fmt": "oxfmt index.ts src test",
-    "lint": "oxlint index.ts src test",
+    "fmt": "oxfmt index.ts src test scripts",
+    "lint": "oxlint index.ts src test scripts",
     "check": "tsc --noEmit",
     "test": "tsx --test test/**/*.test.ts",
     "all": "pnpm run fmt && pnpm run lint && pnpm run check && pnpm test",
-    "ci:fmt": "oxfmt --check index.ts src test",
+    "ci:fmt": "oxfmt --check index.ts src test scripts",
     "ci:lint": "pnpm run lint",
     "ci:check": "pnpm run check",
     "ci:test": "pnpm test"
