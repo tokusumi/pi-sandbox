@@ -1,20 +1,32 @@
 name: test
 
 on:
+  workflow_call:
+    inputs:
+      ref:
+        required: true
+        type: string
   push:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
 
 concurrency:
-  group: pr-${{ github.event.number }}
+  group: test-${{ github.workflow }}-${{ github.event.number || inputs.ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
   test-ts:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v6
         with:
