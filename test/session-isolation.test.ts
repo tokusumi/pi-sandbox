@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -110,5 +111,60 @@ test(
     await child.shutdown();
     assert.equal(await parent.bash(command), parentProxy);
     assert.equal(await parent.userBash(command), parentProxy);
+  },
+);
+
+test(
+  "linked worktree Git operations survive extension reload without persisting allowances",
+  {
+    skip: process.platform !== "darwin",
+    timeout: 30_000,
+  },
+  async (t) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-worktree-")));
+    const main = join(root, "main");
+    const cwd = join(root, "worktree");
+    const agent = join(root, "agent");
+    mkdirSync(main);
+    mkdirSync(agent);
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: main, stdio: "pipe" });
+    git("init");
+    git("config", "user.name", "Test");
+    git("config", "user.email", "test@example.com");
+    git("commit", "--allow-empty", "-m", "initial");
+    git("worktree", "add", "-b", "task", cwd);
+    const originalCwd = process.cwd();
+    const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agent;
+    process.chdir(cwd);
+    const config = JSON.stringify({
+      enabled: true,
+      network: { allowedDomains: [], deniedDomains: [] },
+      filesystem: { allowRead: [root], denyRead: [], allowWrite: [cwd], denyWrite: [] },
+    });
+    const globalPath = join(agent, "sandbox.json");
+    const projectPath = join(cwd, ".pi", "sandbox.json");
+    mkdirSync(join(cwd, ".pi"));
+    writeFileSync(globalPath, config);
+    writeFileSync(projectPath, "{}\n");
+    t.after(() => {
+      process.chdir(originalCwd);
+      if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+      rmSync(root, { recursive: true, force: true });
+    });
+    for (let reload = 0; reload < 3; reload++) {
+      const current = session(cwd);
+      try {
+        await current.start();
+        await current.userBash(
+          `git status && echo ${reload} > file && git add file && git commit -m reload-${reload} && git fetch '${main}'`,
+        );
+        assert.equal(readFileSync(globalPath, "utf8"), config);
+        assert.equal(readFileSync(projectPath, "utf8"), "{}\n");
+      } finally {
+        await current.shutdown();
+      }
+    }
   },
 );

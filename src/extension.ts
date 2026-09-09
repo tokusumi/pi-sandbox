@@ -14,6 +14,7 @@ import {
   getConfigPaths,
   loadConfig,
 } from "./config.ts";
+import { detectAndAllowGitMetadata } from "./git-metadata.ts";
 import {
   canonicalizePath,
   domainIsAllowed,
@@ -117,6 +118,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     try {
+      await detectAndAllowGitMetadata(ctx.cwd, allowances);
       await initializeSandbox(sandboxManager, config, allowances);
       if (setProxyEnvironment && supportsNodeEnvProxy(process.versions.node)) {
         process.env.NODE_USE_ENV_PROXY ??= "1";
@@ -347,6 +349,11 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_start", async (_event, ctx) => {
+    // Pi emits this after rebuilding extensions on reload as well as at startup.
+    if (sandboxEnabled) await disableSandbox(ctx);
+    allowances.domains.length = 0;
+    allowances.readPaths.length = 0;
+    allowances.writePaths.length = 0;
     if (pi.getFlag("no-sandbox") as boolean) {
       sandboxEnabled = false;
       ctx.ui.notify("Sandbox disabled via --no-sandbox", "warning");
