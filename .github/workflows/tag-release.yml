@@ -1,5 +1,13 @@
 name: Tag fork patch
 on:
+  workflow_call:
+    inputs:
+      ref:
+        required: true
+        type: string
+      upstream_tag:
+        required: true
+        type: string
   pull_request:
     types: [closed]
     branches: [main]
@@ -11,18 +19,19 @@ concurrency:
   cancel-in-progress: false
 jobs:
   tag:
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.pull_request.merge_commit_sha || 'main' }}
+          ref: ${{ inputs.ref || github.event.pull_request.merge_commit_sha || 'main' }}
           fetch-depth: 0
       - uses: actions/setup-node@v6
         with:
           node-version: 24
       - name: Tag merged revision
         env:
+          UPSTREAM_TAG: ${{ inputs.upstream_tag }}
           BRANCH: ${{ github.event.pull_request.head.ref }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           REPO: ${{ github.repository }}

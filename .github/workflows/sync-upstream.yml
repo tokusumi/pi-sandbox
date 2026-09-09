@@ -12,6 +12,11 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    outputs:
+      target: ${{ steps.release.outputs.target }}
+      sha: ${{ steps.prepare.outputs.sha }}
+      base_sha: ${{ steps.prepare.outputs.base_sha }}
+      pr: ${{ steps.prepare.outputs.pr }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
@@ -19,11 +24,9 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
-      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-          cache: pnpm
       - run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
@@ -31,29 +34,78 @@ jobs:
           git fetch upstream '+refs/tags/*:refs/upstream/tags/*'
       - id: release
         run: node scripts/upstream.ts plan
-      - if: steps.release.outputs.target != ''
+      - id: prepare
+        if: steps.release.outputs.target != ''
         env:
           BASE: ${{ steps.release.outputs.base }}
           TARGET: ${{ steps.release.outputs.target }}
         run: |
           branch="sync/upstream-$TARGET"
-          if [ "$(gh pr list --state open --head "$branch" --json number --jq length)" != 0 ]; then exit 0; fi
+          echo "base_sha=$(git rev-parse origin/main)" >> "$GITHUB_OUTPUT"
+          pr=$(gh pr list --state open --head "$branch" --json number --jq '.[0].number // empty')
+          if [ -n "$pr" ]; then
+            # Retry an existing PR against current main; leave conflicts unresolved.
+            git fetch origin "refs/heads/$branch"
+            git checkout -b "$branch" FETCH_HEAD
+            git merge --no-edit origin/main
+            git push origin "HEAD:refs/heads/$branch"
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            echo "pr=$pr" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           git checkout -b "$branch"
           # Squash merges lose upstream ancestry. Record the already imported base
           # on this temporary branch before merging the next release normally.
           git merge -s ours --no-edit "refs/upstream/tags/$BASE"
           git merge --no-edit "refs/upstream/tags/$TARGET"
-          pnpm install --frozen-lockfile
-          pnpm run ci:fmt
-          pnpm run ci:lint
-          pnpm run ci:check
-          pnpm run ci:test
-          # The latest release may already be present when bootstrapping a fork.
           if git diff --quiet origin/main HEAD; then
-            git checkout main
-            UPSTREAM_TAG="$TARGET" node scripts/upstream.ts tag
+            # Bootstrap the tag only after both OS checks pass.
+            echo "sha=$(git rev-parse origin/main)" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git push origin "HEAD:refs/heads/$branch"
-          printf 'Upstream release: %s\nCurrent fork base: %s\n\nLocal patch retained:\n- automatic linked-worktree Git metadata session permissions\n\nValidation: formatting, lint, typecheck and tests passed in this workflow.\nMerge using squash after successful CI.\n' "$TARGET" "$BASE" > /tmp/upstream-pr.md
-          gh pr create --base main --head "$branch" --title "chore: sync upstream $TARGET" --body-file /tmp/upstream-pr.md
+          printf 'Upstream release: %s\nCurrent fork base: %s\n\nLocal patch retained:\n- automatic linked-worktree Git metadata session permissions\n\nAutomatically squash-merged after Ubuntu and macOS checks pass for this commit.\n' "$TARGET" "$BASE" > /tmp/upstream-pr.md
+          pr_url=$(gh pr create --base main --head "$branch" --title "chore: sync upstream $TARGET" --body-file /tmp/upstream-pr.md)
+          echo "pr=${pr_url##*/}" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  # Call CI explicitly: GITHUB_TOKEN-created PR events can require approval.
+  test:
+    needs: sync
+    if: needs.sync.outputs.target != ''
+    permissions:
+      contents: read
+    uses: ./.github/workflows/test.yml
+    with:
+      ref: ${{ needs.sync.outputs.sha }}
+
+  merge:
+    needs: [sync, test]
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.merge.outputs.sha }}
+    steps:
+      - id: merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ needs.sync.outputs.pr }}
+          SHA: ${{ needs.sync.outputs.sha }}
+          BASE_SHA: ${{ needs.sync.outputs.base_sha }}
+        run: |
+          # Do not merge a result tested against an obsolete base.
+          test "$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)" = "$BASE_SHA"
+          if [ -n "$PR" ]; then
+            gh pr merge "$PR" --squash --match-head-commit "$SHA"
+            test "$(gh pr view "$PR" --json state --jq .state)" = MERGED
+            SHA=$(gh pr view "$PR" --json mergeCommit --jq .mergeCommit.oid)
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+  # A merge using GITHUB_TOKEN does not trigger the pull_request.closed workflow.
+  tag:
+    needs: [sync, merge]
+    uses: ./.github/workflows/tag-release.yml
+    with:
+      ref: ${{ needs.merge.outputs.sha }}
+      upstream_tag: ${{ needs.sync.outputs.target }}

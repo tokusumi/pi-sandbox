@@ -45,7 +45,8 @@ test("permissionPromptRemainingSeconds rounds up and stops at zero", () => {
 test(
   "showPermissionPrompt safely aborts when its timeout expires",
   { timeout: 1_000 },
-  async () => {
+  async (t) => {
+    t.mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: 0 });
     type TestComponent = { render(width: number): string[]; dispose?(): void };
     type PromptFactory<T> = (
       tui: { requestRender(): void },
@@ -55,6 +56,7 @@ test(
     ) => TestComponent;
 
     let renderedLines: string[] = [];
+    let finished = false;
     const pi = {
       events: { emit: () => undefined },
     } as unknown as ExtensionAPI;
@@ -66,6 +68,7 @@ test(
           new Promise<T>((resolve) => {
             let component: TestComponent | undefined;
             const done = (result: T): void => {
+              finished = true;
               component?.dispose?.();
               resolve(result);
             };
@@ -80,16 +83,13 @@ test(
       },
     } as unknown as ExtensionContext;
 
-    const result = await showPermissionPrompt(
-      pi,
-      ctx,
-      "Blocked",
-      "example.test",
-      () => null,
-      0.001,
-    );
+    const result = showPermissionPrompt(pi, ctx, "Blocked", "example.test", () => null, 1);
 
     assert.ok(renderedLines.includes("⏳ Auto-abort in 1s (permission stays blocked)"));
-    assert.deepEqual(result, { action: "abort", value: "example.test" });
+    t.mock.timers.tick(999);
+    assert.equal(finished, false);
+    t.mock.timers.tick(1);
+    assert.equal(finished, true);
+    assert.deepEqual(await result, { action: "abort", value: "example.test" });
   },
 );
